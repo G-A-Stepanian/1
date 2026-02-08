@@ -1,137 +1,126 @@
 # -*- coding: utf-8 -*-
 """
-Модуль для поиска информации в интернете
+Модуль для поиска информации через Tavily API
 """
 
-import requests
+import os
 import time
-import re
-from bs4 import BeautifulSoup
-from config import SEARCH_DELAY, MAX_RETRIES, TIMEOUT
+from tavily import TavilyClient
+from dotenv import load_dotenv
+from config import SEARCH_DELAY
+
+# Загружаем переменные окружения
+load_dotenv()
 
 
 class WebSearcher:
-    """Класс для поиска информации через различные источники"""
+    """Класс для поиска информации через Tavily API"""
 
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        })
+        """Инициализация Tavily client"""
+        api_key = os.getenv('TAVILY_API_KEY')
 
-    def search_google(self, query):
-        """
-        Поиск через Google (используя requests)
-        Возвращает список результатов поиска
-        """
-        try:
-            url = f"https://www.google.com/search?q={requests.utils.quote(query)}"
-            response = self.session.get(url, timeout=TIMEOUT)
+        if not api_key:
+            raise ValueError(
+                "❌ Не найден TAVILY_API_KEY в файле .env\n"
+                "Получи ключ на: https://app.tavily.com/sign-up\n"
+                "Добавь в файл .env: TAVILY_API_KEY=your_key_here"
+            )
 
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results = []
-
-                # Ищем блоки с результатами
-                for g in soup.find_all('div', class_='g')[:5]:  # Первые 5 результатов
-                    title_elem = g.find('h3')
-                    link_elem = g.find('a')
-                    snippet_elem = g.find('div', class_=['VwiC3b', 'yXK7lf'])
-
-                    if title_elem and link_elem:
-                        results.append({
-                            'title': title_elem.get_text(),
-                            'url': link_elem.get('href'),
-                            'snippet': snippet_elem.get_text() if snippet_elem else ''
-                        })
-
-                return results
-
-        except Exception as e:
-            print(f"⚠️  Ошибка поиска в Google: {e}")
-
-        return []
-
-    def search_duckduckgo(self, query):
-        """
-        Альтернативный поиск через DuckDuckGo
-        """
-        try:
-            url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}"
-            response = self.session.get(url, timeout=TIMEOUT)
-
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results = []
-
-                for result in soup.find_all('div', class_='result')[:5]:
-                    title_elem = result.find('a', class_='result__a')
-                    snippet_elem = result.find('a', class_='result__snippet')
-
-                    if title_elem:
-                        results.append({
-                            'title': title_elem.get_text(),
-                            'url': title_elem.get('href'),
-                            'snippet': snippet_elem.get_text() if snippet_elem else ''
-                        })
-
-                return results
-
-        except Exception as e:
-            print(f"⚠️  Ошибка поиска в DuckDuckGo: {e}")
-
-        return []
+        self.client = TavilyClient(api_key=api_key)
+        print("✅ Tavily API подключен")
 
     def find_info(self, country, question):
         """
         Поиск информации по конкретному вопросу для страны
         """
-        # Формируем поисковый запрос
-        query = f"{country} {question} 2026"
+        # Формируем запрос на русском
+        query = f"{country}: {question} 2026"
 
-        print(f"🔍 Ищу: {query}")
+        print(f"🔍 Поиск через Tavily: {query[:70]}...")
 
-        # Пробуем поиск через Google
-        results = self.search_google(query)
+        try:
+            # Выполняем поиск через Tavily
+            response = self.client.search(
+                query=query,
+                search_depth="basic",
+                max_results=3,
+                include_answer=True,
+                include_raw_content=False
+            )
 
-        # Если Google не дал результатов, пробуем DuckDuckGo
-        if not results:
+            # Извлекаем ответ
+            answer = self._extract_answer(response)
+
             time.sleep(SEARCH_DELAY)
-            results = self.search_duckduckgo(query)
-
-        # Обрабатываем результаты
-        if results:
-            # Извлекаем наиболее релевантную информацию
-            answer = self._extract_answer(results, question)
-            time.sleep(SEARCH_DELAY)  # Задержка между запросами
             return answer
 
+        except Exception as e:
+            print(f"⚠️  Ошибка Tavily API: {e}")
+            return f"Ошибка API: {str(e)[:100]}"
+
+    def _extract_answer(self, response):
+        """Извлечение ответа из результатов Tavily"""
+
+        # Приоритет 1: Готовый ответ от Tavily
+        if response.get('answer'):
+            answer = response['answer'].strip()
+            if len(answer) > 50:
+                return self._clean_answer(answer)
+
+        # Приоритет 2: Контент из результатов поиска
+        results = response.get('results', [])
+
+        if results:
+            combined_text = []
+
+            for result in results[:2]:
+                content = result.get('content', '')
+
+                if content:
+                    snippet = content[:200].strip()
+                    combined_text.append(snippet)
+
+            if combined_text:
+                answer = " | ".join(combined_text)
+                return self._clean_answer(answer)
+
         return "Данные не найдены"
 
-    def _extract_answer(self, results, question):
-        """
-        Извлечение ответа из результатов поиска
-        Простая эвристика - берем первый snippet с ссылкой
-        """
-        if results and results[0].get('snippet'):
-            snippet = results[0]['snippet']
-            url = results[0].get('url', '')
+    def _clean_answer(self, text):
+        """Очистка и форматирование ответа"""
+        if not text:
+            return "Данные не найдены"
 
-            # Очищаем snippet от лишних символов
-            snippet = snippet.strip()
+        import re
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
 
-            # Ограничиваем длину ответа
-            if len(snippet) > 200:
-                snippet = snippet[:200] + "..."
+        if len(text) > 500:
+            text = text[:500] + "..."
 
-            # Возвращаем snippet + источник
-            return f"{snippet}\n[Источник: {url}]"
+        return text
 
-        return "Данные не найдены"
+    def close(self):
+        """Закрыть соединение"""
+        print("✅ Поисковик остановлен")
 
 
-# Тестирование модуля
+# Тестирование
 if __name__ == "__main__":
-    searcher = WebSearcher()
-    result = searcher.find_info("Черногория", "стоимость аренды жилья на семью из 4 человек")
-    print(f"\n✅ Результат:\n{result}")
+    print("=" * 60)
+    print("ТЕСТ TAVILY API")
+    print("=" * 60)
+
+    try:
+        searcher = WebSearcher()
+
+        result = searcher.find_info("Черногория", "стоимость аренды жилья")
+
+        print(f"\n✅ РЕЗУЛЬТАТ:\n{result}\n")
+        print("=" * 60)
+
+        searcher.close()
+
+    except Exception as e:
+        print(f"\n❌ ОШИБКА: {e}")
