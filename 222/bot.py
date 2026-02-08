@@ -1,201 +1,111 @@
-import asyncio
-import logging
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+# -*- coding: utf-8 -*-
+"""
+Главный файл для запуска бота по сбору информации о странах
+"""
 
-# ← ТВОИ ДАННЫЕ ЗДЕСЬ
-import asyncio
-import logging
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
-# ← ТВОИ ДАННЫЕ ЗДЕСЬ
-API_TOKEN = "8425957813:AAG95wj5R6MCe7HqX7QcAXetcpzS1rWoNns"  # Твой токен в кавычках!
-ADMIN_CHAT_ID = 1659160019 # Твой chat ID БЕЗ кавычек!
-
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(
-    token=API_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ← ИСПРАВЛЕНО!
-)
-dp = Dispatcher()
+import time
+from config import COUNTRIES, QUESTIONS, SPREADSHEET_ID
+from google_sheets import GoogleSheetsManager
+from web_search import WebSearcher
 
 
-# Машина состояний для заявки
-class OrderForm(StatesGroup):
-    name = State()
-    phone = State()
-    comment = State()
+def main():
+    """Основная функция бота"""
 
+    print("=" * 60)
+    print("🤖 БОТ ДЛЯ СБОРА ИНФОРМАЦИИ ПО СТРАНАМ (SELENIUM)")
+    print("=" * 60)
 
+    # Инициализация Google Sheets
+    print("\n📊 Подключение к Google Sheets...")
+    try:
+        sheets = GoogleSheetsManager(SPREADSHEET_ID)
+    except Exception as e:
+        print(f"❌ Ошибка подключения к Google Sheets: {e}")
+        print("Проверь наличие файла service_account.json и доступ к таблице")
+        return
 
+    # Создаем структуру таблицы
+    print("\n🏗️  Создание структуры таблицы...")
+    sheets.setup_table_structure(COUNTRIES, QUESTIONS)
 
+    print("\n" + "=" * 60)
+    print(f"📍 Стран для анализа: {len(COUNTRIES)}")
+    print(f"❓ Вопросов по каждой стране: {len(QUESTIONS)}")
+    print(f"📝 Всего ячеек для заполнения: {len(COUNTRIES) * len(QUESTIONS)}")
+    print("=" * 60)
 
+    # Спрашиваем подтверждение
+    response = input("\n▶️  Начать поиск? (да/нет): ").strip().lower()
+    if response not in ['да', 'yes', 'y', 'д']:
+        print("❌ Отменено пользователем")
+        return
 
+    # Спрашиваем про режим браузера
+    headless_response = input(
+        "🖥️  Запустить браузер в фоновом режиме? (да/нет, рекомендуется 'нет' для первого раза): ").strip().lower()
+    headless = headless_response in ['да', 'yes', 'y', 'д']
 
+    # Инициализация браузера
+    print("\n🌐 Запуск браузера...")
+    searcher = WebSearcher(headless=headless)
 
+    # Основной цикл: проходим по каждой стране и каждому вопросу
+    total_cells = len(COUNTRIES) * len(QUESTIONS)
+    current_cell = 0
+    errors_count = 0
 
+    try:
+        for col_idx, country in enumerate(COUNTRIES, start=2):  # Начинаем с B (2-я колонка)
+            print("\n" + "🌍" * 30)
+            print(f"🌍 СТРАНА: {country.upper()}")
+            print("🌍" * 30)
 
-#hhhhhh
+            for row_idx, question in enumerate(QUESTIONS, start=2):  # Начинаем со 2-й строки
+                current_cell += 1
 
+                # Проверяем, не заполнена ли ячейка уже
+                existing_value = sheets.get_cell_value(row_idx, col_idx)
+                if existing_value and existing_value != "":
+                    print(f"⏭️  [{current_cell}/{total_cells}] Пропускаю (уже заполнено): {question[:50]}...")
+                    continue
 
-# Клавиатура
-def main_kb():
-    kb = [[KeyboardButton(text="Оформить заказ")]]
-    return ReplyKeyboardMarkup(
-        keyboard=kb,
-        resize_keyboard=True
-    )
+                print(f"\n📌 [{current_cell}/{total_cells}] Вопрос: {question[:70]}...")
 
+                # Поиск информации
+                try:
+                    answer = searcher.find_info(country, question)
 
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer(
-        "Привет! Я бот для приёма заказов.\nНажми кнопку ниже, чтобы оформить заявку.",
-        reply_markup=main_kb()
-    )
+                    # Записываем в таблицу
+                    success = sheets.update_cell(row_idx, col_idx, answer)
 
+                    if success:
+                        print(f"✅ Записано: {answer[:80]}...")
+                    else:
+                        print(f"❌ Ошибка записи в таблицу")
+                        errors_count += 1
 
-@dp.message(F.text == "Оформить заказ")
-async def order_start(message: Message, state: FSMContext):
-    await message.answer("Как вас зовут?")
-    await state.set_state(OrderForm.name)
+                except Exception as e:
+                    print(f"❌ Ошибка при обработке: {e}")
+                    sheets.update_cell(row_idx, col_idx, f"Ошибка: {str(e)[:100]}")
+                    errors_count += 1
 
+                # Прогресс
+                progress = (current_cell / total_cells) * 100
+                print(f"📊 Прогресс: {progress:.1f}% ({current_cell}/{total_cells}) | Ошибок: {errors_count}")
 
-@dp.message(OrderForm.name)
-async def order_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Введите ваш номер телефона:")
-    await state.set_state(OrderForm.phone)
+    finally:
+        # Закрываем браузер в любом случае
+        searcher.close()
 
-
-@dp.message(OrderForm.phone)
-async def order_phone(message: Message, state: FSMContext):
-    await state.update_data(phone=message.text)
-    await message.answer("Опишите ваш заказ или оставьте комментарий:")
-    await state.set_state(OrderForm.comment)
-
-
-@dp.message(OrderForm.comment)
-async def order_comment(message: Message, state: FSMContext):
-    await state.update_data(comment=message.text)
-    data = await state.get_data()
-    await state.clear()
-
-    text = (
-        "<b>Новая заявка</b>\n\n"
-        f"Имя: {data['name']}\n"
-        f"Телефон: {data['phone']}\n"
-        f"Комментарий: {data['comment']}\n"
-        f"Telegram: @{message.from_user.username or 'нет юзернейма'}\n"
-        f"ID: {message.from_user.id}"
-    )
-
-    # Отправляем вам
-    await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
-
-    # Подтверждение пользователю
-    await message.answer("Спасибо! Заявка отправлена, мы свяжемся с вами в ближайшее время.")
-
-
-async def main():
-    await dp.start_polling(bot)
+    print("\n" + "=" * 60)
+    print("🎉 ГОТОВО! Все данные собраны и записаны в таблицу")
+    print(f"✅ Успешно обработано: {current_cell - errors_count}/{total_cells}")
+    print(f"❌ Ошибок: {errors_count}")
+    print("=" * 60)
+    print(f"\n📄 Ссылка на таблицу:")
+    print(f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
-
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(
-    token=API_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ← ИСПРАВЛЕНО!
-)
-dp = Dispatcher()
-
-
-# Машина состояний для заявки
-class OrderForm(StatesGroup):
-    name = State()
-    phone = State()
-    comment = State()
-
-
-# Клавиатура
-def main_kb():
-    kb = [[KeyboardButton(text="Оформить заказ")]]
-    return ReplyKeyboardMarkup(
-        keyboard=kb,
-        resize_keyboard=True
-    )
-
-
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer(
-        "Привет! Я бот для приёма заказов.\nНажми кнопку ниже, чтобы оформить заявку.",
-        reply_markup=main_kb()
-    )
-
-
-@dp.message(F.text == "Оформить заказ")
-async def order_start(message: Message, state: FSMContext):
-    await message.answer("Как вас зовут?")
-    await state.set_state(OrderForm.name)
-
-
-@dp.message(OrderForm.name)
-async def order_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Введите ваш номер телефона:")
-    await state.set_state(OrderForm.phone)
-
-
-@dp.message(OrderForm.phone)
-async def order_phone(message: Message, state: FSMContext):
-    await state.update_data(phone=message.text)
-    await message.answer("Опишите ваш заказ или оставьте комментарий:")
-    await state.set_state(OrderForm.comment)
-
-
-@dp.message(OrderForm.comment)
-async def order_comment(message: Message, state: FSMContext):
-    await state.update_data(comment=message.text)
-    data = await state.get_data()
-    await state.clear()
-
-    text = (
-        "<b>Новая заявка</b>\n\n"
-        f"Имя: {data['name']}\n"
-        f"Телефон: {data['phone']}\n"
-        f"Комментарий: {data['comment']}\n"
-        f"Telegram: @{message.from_user.username or 'нет юзернейма'}\n"
-        f"ID: {message.from_user.id}"
-    )
-
-    # Отправляем вам
-    await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
-
-    # Подтверждение пользователю
-    await message.answer("Спасибо! Заявка отправлена, мы свяжемся с вами в ближайшее время.")
-
-
-async def main(): #333
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-    # 111
+    main()
